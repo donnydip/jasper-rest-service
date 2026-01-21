@@ -1,0 +1,184 @@
+openapi: 3.0.3
+info:
+  title: "Jasper Service Async API"
+  description: |
+    An asynchronous API for generating reports using JasperReports.
+    The workflow is as follows:
+    1.  Submit a report request to the `/async` endpoint. You will receive a `jobId`.
+    2.  Poll the `/status/{jobId}` endpoint periodically.
+    3.  Once the status is `COMPLETE`, a `downloadUrl` will be provided.
+    4.  Use the `downloadUrl` to get the report file. The file is deleted from the server immediately after the first successful download.
+  version: "2.0.0"
+servers:
+  - url: http://localhost:8080
+    description: Local Development Server
+
+tags:
+  - name: "Report Generation"
+    description: "Endpoints for asynchronous report creation and retrieval."
+
+paths:
+  /api/v2/report/async:
+    post:
+      tags:
+        - "Report Generation"
+      summary: "Submit a new report generation job"
+      description: "Queues a new report for generation. The request is processed asynchronously. A job ID is returned immediately."
+      operationId: "submitReport"
+      security:
+        - BearerAuth: []
+      requestBody:
+        description: "Details for the report generation job."
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportRequest'
+      responses:
+        '202':
+          description: "Accepted. The job has been queued successfully."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportResponse'
+        '400':
+          description: "Bad Request. The request body is invalid or the provided `credentialKey` does not exist."
+        '401':
+          description: "Unauthorized. The Bearer token is missing or invalid."
+
+  /api/v2/report/status/{jobId}:
+    get:
+      tags:
+        - "Report Generation"
+      summary: "Get the status of a report job"
+      description: "Poll this endpoint to check the current status of a report generation job."
+      operationId: "getReportStatus"
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: "The ID of the job to check."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: "OK. The current status of the job."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '401':
+          description: "Unauthorized."
+        '404':
+          description: "Not Found. The specified job ID does not exist."
+
+  /api/v2/report/download/{jobId}:
+    get:
+      tags:
+        - "Report Generation"
+      summary: "Download the generated report"
+      description: "Downloads the completed report file. This is a one-time operation. The file and job record are deleted from the server after the download is complete."
+      operationId: "downloadReport"
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: "The ID of the completed job."
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: "OK. The report file is returned as a PDF."
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              description: "Suggests a filename for the browser to save the file as."
+              schema:
+                type: string
+                example: 'attachment; filename="MyWebAppReport.pdf"'
+        '401':
+          description: "Unauthorized."
+        '404':
+          description: "Not Found. The job ID does not exist, or the job is not yet complete."
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Bearer token for API authentication. For this implementation, any non-empty token is accepted as a placeholder."
+
+  schemas:
+    ReportRequest:
+      type: object
+      required:
+        - jrxmlFileName
+        - outputFileName
+        - credentialKey
+      properties:
+        jrxmlFileName:
+          type: string
+          description: "The name of the .jrxml template file (without the extension)."
+          example: "Simple_Report"
+        outputFileName:
+          type: string
+          description: "The desired base name for the output report file (without the extension)."
+          example: "MyWebAppReport"
+        outputFormat:
+          type: string
+          enum: [PDF, XLSX, CSV, DOCX]
+          default: PDF
+          description: "The desired output format for the report. Defaults to PDF."
+        appType:
+          type: string
+          description: "An identifier for the calling application, for logging or tracking purposes."
+          example: "laravel-app"
+        credentialKey:
+          type: string
+          description: "The key corresponding to a pre-configured database connection in the service's properties."
+          example: "web001"
+        jasperParameters:
+          type: object
+          additionalProperties: true
+          description: "A map of key-value pairs to be passed as parameters to the Jasper report."
+          example:
+            ReportTitle: "Report for Web App 001"
+            Author: "Central Auth"
+
+    ReportResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: "The unique identifier for the queued job."
+        statusUrl:
+          type: string
+          description: "The URL to poll for the job's status."
+          example: "/api/v2/report/status/123e4567-e89b-12d3-a456-426614174000"
+
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, COMPLETE, FAILED]
+          description: "The current status of the job."
+        message:
+          type: string
+          description: "A descriptive message about the current status."
+        downloadUrl:
+          type: string
+          description: "The URL to download the final report. Only present when status is 'COMPLETE'."
+          example: "/api/v2/report/download/123e4567-e89b-12d3-a456-426614174000"
