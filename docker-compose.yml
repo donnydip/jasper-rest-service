@@ -26,9 +26,6 @@ services:
     build: .
     container_name: jasper-service
     restart: unless-stopped
-    volumes:
-      - .:/app
-    command: ["tail", "-f", "/dev/null"]
     ports:
       - "${JASPER_SERVICE_HOST_PORT:-8080}:8080"
     depends_on:
@@ -40,7 +37,12 @@ services:
       - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
-    # The application JAR will be built via docker compose exec and run manually.
+      - DS_WEB001_URL=${DS_WEB001_URL}
+      - DS_WEB001_USER=${DS_WEB001_USER}
+      - DS_WEB001_PASS=${DS_WEB001_PASS}
+      - DS_WEB002_URL=${DS_WEB002_URL}
+      - DS_WEB002_USER=${DS_WEB002_USER}
+      - DS_WEB002_PASS=${DS_WEB002_PASS}
 
 volumes:
   postgres_data:

@@ -1,9 +1,17 @@
-FROM eclipse-temurin:21-jdk-jammy
-
-# Install Maven
-RUN apt-get update && apt-get install -y maven && rm -rf /var/lib/apt/lists/*
-
+# Stage 1: Build
+FROM eclipse-temurin:21-jdk-jammy AS build
 WORKDIR /app
+COPY pom.xml .
+COPY .mvn .mvn
+COPY mvnw .
+RUN chmod +x mvnw && ./mvnw dependency:go-offline -B
+COPY src src
+RUN ./mvnw clean package -DskipTests -B
 
-# Source code will be mounted as a volume
-VOLUME /tmp
+# Stage 2: Run
+FROM eclipse-temurin:21-jre-jammy
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+RUN mkdir -p /app/generated-reports
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]

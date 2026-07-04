@@ -1,5 +1,9 @@
 package com.devsec.jasperservice.dto;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+
 import java.util.Map;
 
 public class ReportRequest {
@@ -8,11 +12,23 @@ public class ReportRequest {
         PDF, XLSX, CSV, DOCX
     }
 
+    @NotBlank
+    @Pattern(regexp = "^[a-zA-Z0-9_-]+$", message = "jrxmlFileName must be alphanumeric with underscores/hyphens only")
     private String jrxmlFileName;
+
+    @NotBlank
+    @Pattern(regexp = "^[a-zA-Z0-9_.-]+$", message = "outputFileName must be alphanumeric with underscores/hyphens/periods only")
     private String outputFileName;
-    private OutputFormat outputFormat = OutputFormat.PDF; // Default to PDF
+
+    @NotNull
+    private OutputFormat outputFormat = OutputFormat.PDF;
+
     private String appType;
+
+    @NotBlank
+    @Pattern(regexp = "^[a-zA-Z0-9_-]+$", message = "credentialKey must be alphanumeric with underscores/hyphens only")
     private String credentialKey;
+
     private Map<String, Object> jasperParameters;
     
     // Getters and Setters

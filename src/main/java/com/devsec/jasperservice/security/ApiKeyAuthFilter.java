@@ -4,7 +4,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
@@ -12,8 +11,15 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.Optional;
 
 public class ApiKeyAuthFilter extends OncePerRequestFilter {
+
+    private final ApiKeyService apiKeyService;
+
+    public ApiKeyAuthFilter(ApiKeyService apiKeyService) {
+        this.apiKeyService = apiKeyService;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -24,18 +30,15 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(header) && header.startsWith("Bearer ")) {
             String token = header.substring(7);
 
-            // ================== IMPORTANT ==================
-            // IN A REAL APP, YOU WOULD VALIDATE THE JWT TOKEN HERE
-            // For example, decode it, check its signature, expiration, etc.
-            // If valid, you would extract user details.
-            // For this example, we'll just accept any non-empty token.
-            // ===============================================
-
             if (StringUtils.hasText(token)) {
-                // Assuming token is valid, create an authentication object
-                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    "apiUser", null, Collections.singletonList(new SimpleGrantedAuthority("ROLE_API_USER")));
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+                Optional<ApiKey> apiKeyOpt = apiKeyService.getApiKey(token);
+                if (apiKeyOpt.isPresent() && apiKeyOpt.get().isActive()) {
+                    ApiKeyAuthenticationToken authentication = new ApiKeyAuthenticationToken(
+                        apiKeyOpt.get(),
+                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_API_USER"))
+                    );
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                }
             }
         }
         
