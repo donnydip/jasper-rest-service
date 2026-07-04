@@ -36,10 +36,11 @@ public class SecurityConfig {
                     "/docs/**",
                     "/openapi.yaml",
                     "/api-docs/**",
-                    "/api/report/**" // Allow access to old v1 endpoint if it exists
+                    "/actuator/health",
+                    "/actuator/info"
                 ).permitAll()
-                .requestMatchers("/api/v2/**").authenticated() // Secure v2 endpoints
-                .anyRequest().permitAll()
+                // FIX-06: deny-by-default — any endpoint not explicitly whitelisted above requires authentication
+                .anyRequest().authenticated()
             )
             .addFilterBefore(new ApiKeyAuthFilter(apiKeyService), UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(rateLimitFilter, ApiKeyAuthFilter.class);

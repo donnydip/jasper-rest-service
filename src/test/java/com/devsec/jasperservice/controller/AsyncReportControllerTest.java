@@ -13,13 +13,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.io.ByteArrayInputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,7 +92,7 @@ class AsyncReportControllerTest {
     @Test
     void submitReport_withValidRequest_shouldReturn202() throws Exception {
         setupValidApiKey();
-        when(asyncReportService.queueReport(any())).thenReturn("test-job-id");
+        when(asyncReportService.queueReport(any(), any())).thenReturn("test-job-id");
 
         mockMvc.perform(post("/api/v2/report/async")
                         .header("Authorization", "Bearer " + VALID_API_KEY)
@@ -104,6 +107,25 @@ class AsyncReportControllerTest {
                 .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.jobId").value("test-job-id"))
                 .andExpect(jsonPath("$.statusUrl").value("/api/v2/report/status/test-job-id"));
+    }
+
+    @Test
+    void submitReport_withDisallowedCredentialKey_shouldReturn403() throws Exception {
+        setupValidApiKey();
+        when(asyncReportService.queueReport(any(), any()))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "credentialKey not allowed for this client"));
+
+        mockMvc.perform(post("/api/v2/report/async")
+                        .header("Authorization", "Bearer " + VALID_API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "jrxmlFileName": "Simple_Report",
+                                    "outputFileName": "TestReport",
+                                    "credentialKey": "web002"
+                                }
+                                """))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -179,11 +201,9 @@ class AsyncReportControllerTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void downloadReport_whenNotComplete_shouldReturn404() throws Exception {
         setupValidApiKey();
-        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
-        when(hashOperations.get("job:pending-job", "status")).thenReturn(StatusResponse.Status.PENDING.name());
+        when(asyncReportService.claimAndGetReportFile("pending-job")).thenReturn(null);
 
         mockMvc.perform(get("/api/v2/report/download/pending-job")
                         .header("Authorization", "Bearer " + VALID_API_KEY))
@@ -191,19 +211,27 @@ class AsyncReportControllerTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void downloadReport_whenComplete_shouldReturnFile() throws Exception {
         setupValidApiKey();
-        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
-        when(hashOperations.get("job:ready-job", "status")).thenReturn(StatusResponse.Status.COMPLETE.name());
-        when(hashOperations.get("job:ready-job", "request")).thenReturn(null);
 
-        ByteArrayResource resource = new ByteArrayResource("PDF content".getBytes());
-        when(asyncReportService.getReportFile("ready-job")).thenReturn(resource);
+        InputStreamResource resource = new InputStreamResource(new ByteArrayInputStream("PDF content".getBytes()));
+        AsyncReportService.ReportFileClaim claim = new AsyncReportService.ReportFileClaim(resource, null, 11);
+        when(asyncReportService.claimAndGetReportFile("ready-job")).thenReturn(claim);
 
         mockMvc.perform(get("/api/v2/report/download/ready-job")
                         .header("Authorization", "Bearer " + VALID_API_KEY))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Disposition", "attachment; filename=\"report.pdf\""));
+    }
+
+    @Test
+    void downloadReport_whenSecondConcurrentRequest_shouldReturn404() throws Exception {
+        // FIX-02: the loser of the atomic-claim race gets a 404, not a 500 or a double-delete.
+        setupValidApiKey();
+        when(asyncReportService.claimAndGetReportFile("raced-job")).thenReturn(null);
+
+        mockMvc.perform(get("/api/v2/report/download/raced-job")
+                        .header("Authorization", "Bearer " + VALID_API_KEY))
+                .andExpect(status().isNotFound());
     }
 }

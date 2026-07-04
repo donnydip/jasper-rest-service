@@ -31,17 +31,24 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             String token = header.substring(7);
 
             if (StringUtils.hasText(token)) {
-                Optional<ApiKey> apiKeyOpt = apiKeyService.getApiKey(token);
-                if (apiKeyOpt.isPresent() && apiKeyOpt.get().isActive()) {
-                    ApiKeyAuthenticationToken authentication = new ApiKeyAuthenticationToken(
-                        apiKeyOpt.get(),
-                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_API_USER"))
-                    );
-                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                try {
+                    Optional<ApiKey> apiKeyOpt = apiKeyService.getApiKey(token);
+                    if (apiKeyOpt.isPresent() && apiKeyOpt.get().isActive()) {
+                        ApiKeyAuthenticationToken authentication = new ApiKeyAuthenticationToken(
+                            apiKeyOpt.get(),
+                            Collections.singletonList(new SimpleGrantedAuthority("ROLE_API_USER"))
+                        );
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                    }
+                } catch (ApiKeyService.ApiKeyLookupUnavailableException e) {
+                    response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                    response.setContentType("application/json");
+                    response.getWriter().write("{\"error\":\"Service is currently unavailable\"}");
+                    return;
                 }
             }
         }
-        
+
         filterChain.doFilter(request, response);
     }
 }

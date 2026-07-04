@@ -1,5 +1,7 @@
 package com.devsec.jasperservice.security;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.ConsumptionProbe;
@@ -13,16 +15,20 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private final int requestsPerMinute;
     private final boolean enabled;
-    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+    private final Cache<String, Bucket> buckets = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .build();
 
     public RateLimitFilter(
             @Value("${rate-limit.requests-per-minute:10}") int requestsPerMinute,
@@ -41,13 +47,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         String header = request.getHeader("Authorization");
-        String clientId = "anonymous";
-        
+        String clientId;
+
         if (header != null && header.startsWith("Bearer ")) {
-            clientId = header.substring(7);
+            clientId = hash(header.substring(7));
+        } else {
+            clientId = "ip:" + request.getRemoteAddr();
         }
 
-        Bucket bucket = buckets.computeIfAbsent(clientId, this::createNewBucket);
+        Bucket bucket = buckets.get(clientId, this::createNewBucket);
         ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
 
         if (probe.isConsumed()) {
@@ -55,10 +63,14 @@ public class RateLimitFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
         } else {
             response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
-            long waitForRefill = probe.getNanosToWaitForRefill() / 1_000_000_000;
-            response.setHeader("Retry-After", String.valueOf(waitForRefill));
+            long waitForRefillSeconds = Math.max(1, ceilDiv(probe.getNanosToWaitForRefill(), 1_000_000_000L));
+            response.setHeader("Retry-After", String.valueOf(waitForRefillSeconds));
             response.getWriter().write("Too Many Requests");
         }
+    }
+
+    private static long ceilDiv(long numerator, long denominator) {
+        return (numerator + denominator - 1) / denominator;
     }
 
     private Bucket createNewBucket(String key) {
@@ -69,5 +81,19 @@ public class RateLimitFilter extends OncePerRequestFilter {
         return Bucket.builder()
                 .addLimit(limit)
                 .build();
+    }
+
+    private static String hash(String token) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hashBytes.length * 2);
+            for (byte b : hashBytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        }
     }
 }

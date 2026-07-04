@@ -3,6 +3,7 @@ package com.devsec.jasperservice.service;
 import com.devsec.jasperservice.config.DataSourceProperties;
 import com.devsec.jasperservice.dto.ReportRequest;
 import com.devsec.jasperservice.dto.StatusResponse;
+import com.devsec.jasperservice.security.ApiKey;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -41,6 +43,12 @@ class AsyncReportServiceTest {
 
     private AsyncReportService asyncReportService;
 
+    private static final ApiKey ALLOWED_API_KEY =
+            new ApiKey("test-key", "TestClient", List.of("web001"), true, System.currentTimeMillis());
+
+    private static final ApiKey DISALLOWED_API_KEY =
+            new ApiKey("other-key", "OtherClient", List.of("web002"), true, System.currentTimeMillis());
+
     @BeforeEach
     void setUp() {
         // Mock the connections map with a valid key
@@ -59,12 +67,12 @@ class AsyncReportServiceTest {
         lenient().when(reportExecutor.getThreadPoolExecutor()).thenReturn(mockThreadPool);
 
         asyncReportService = new AsyncReportService(
-                redisTemplate, System.getProperty("java.io.tmpdir") + "/jasper-test-reports",
-                dataSourceProperties, reportExecutor);
+                redisTemplate, new ObjectMapper(), System.getProperty("java.io.tmpdir") + "/jasper-test-reports",
+                24, dataSourceProperties, reportExecutor);
     }
 
     @Test
-    void queueReport_withValidRequest_shouldReturnJobId() {
+    void queueReport_withValidRequestAndAllowedKey_shouldReturnJobId() {
         // Arrange
         when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         when(redisTemplate.expire(anyString(), anyLong(), any(TimeUnit.class))).thenReturn(true);
@@ -76,7 +84,7 @@ class AsyncReportServiceTest {
         request.setCredentialKey("web001");
 
         // Act
-        String jobId = asyncReportService.queueReport(request);
+        String jobId = asyncReportService.queueReport(request, ALLOWED_API_KEY);
 
         // Assert
         assertNotNull(jobId);
@@ -85,6 +93,35 @@ class AsyncReportServiceTest {
         verify(hashOperations).put(eq("job:" + jobId), eq("request"), anyString());
         verify(redisTemplate).convertAndSend(eq("report-jobs"), eq(jobId));
         verify(redisTemplate).expire(eq("job:" + jobId), eq(24L), eq(TimeUnit.HOURS));
+    }
+
+    @Test
+    void queueReport_withDisallowedCredentialKey_shouldThrowForbidden() {
+        // Arrange
+        ReportRequest request = new ReportRequest();
+        request.setJrxmlFileName("Simple_Report");
+        request.setOutputFileName("TestReport");
+        request.setCredentialKey("web001");
+
+        // Act & Assert — DISALLOWED_API_KEY is only allowed to use "web002"
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> asyncReportService.queueReport(request, DISALLOWED_API_KEY));
+        assertEquals(403, exception.getStatusCode().value());
+    }
+
+    @Test
+    void queueReport_withNullAllowedCredentialKeys_shouldThrowForbidden() {
+        // Arrange
+        ApiKey apiKeyWithNoAllowedKeys = new ApiKey("key", "Client", null, true, System.currentTimeMillis());
+        ReportRequest request = new ReportRequest();
+        request.setJrxmlFileName("Simple_Report");
+        request.setOutputFileName("TestReport");
+        request.setCredentialKey("web001");
+
+        // Act & Assert
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> asyncReportService.queueReport(request, apiKeyWithNoAllowedKeys));
+        assertEquals(403, exception.getStatusCode().value());
     }
 
     @Test
@@ -97,7 +134,7 @@ class AsyncReportServiceTest {
 
         // Act & Assert
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> asyncReportService.queueReport(request));
+                () -> asyncReportService.queueReport(request, ALLOWED_API_KEY));
         assertTrue(exception.getMessage().contains("nonexistent_key"));
     }
 
@@ -119,7 +156,7 @@ class AsyncReportServiceTest {
 
         // Act & Assert
         ResponseStatusException exception = assertThrows(ResponseStatusException.class,
-                () -> asyncReportService.queueReport(request));
+                () -> asyncReportService.queueReport(request, ALLOWED_API_KEY));
         assertEquals(429, exception.getStatusCode().value());
     }
 
@@ -147,5 +184,42 @@ class AsyncReportServiceTest {
 
         // Assert
         verify(redisTemplate).delete("job:test-id");
+    }
+
+    @Test
+    void claimAndGetReportFile_withNoJobData_shouldReturnNull() throws Exception {
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(hashOperations.entries("job:missing")).thenReturn(new HashMap<>());
+
+        var result = asyncReportService.claimAndGetReportFile("missing");
+
+        assertNull(result);
+    }
+
+    @Test
+    void claimAndGetReportFile_whenNotComplete_shouldReturnNull() throws Exception {
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        Map<Object, Object> jobData = new HashMap<>();
+        jobData.put("status", StatusResponse.Status.PROCESSING.name());
+        when(hashOperations.entries("job:pending")).thenReturn(jobData);
+
+        var result = asyncReportService.claimAndGetReportFile("pending");
+
+        assertNull(result);
+    }
+
+    @Test
+    void claimAndGetReportFile_whenLoserOfRace_shouldReturnNull() throws Exception {
+        // Simulate two concurrent downloads: the redis "delete" only succeeds for one of them.
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        Map<Object, Object> jobData = new HashMap<>();
+        jobData.put("status", StatusResponse.Status.COMPLETE.name());
+        jobData.put("filePath", "/tmp/nonexistent-report-file.pdf");
+        when(hashOperations.entries("job:race")).thenReturn(jobData);
+        when(redisTemplate.delete("job:race")).thenReturn(false);
+
+        var result = asyncReportService.claimAndGetReportFile("race");
+
+        assertNull(result);
     }
 }

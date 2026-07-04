@@ -3,6 +3,7 @@ package com.devsec.jasperservice.controller;
 import com.devsec.jasperservice.dto.ReportRequest;
 import com.devsec.jasperservice.dto.ReportResponse;
 import com.devsec.jasperservice.dto.StatusResponse;
+import com.devsec.jasperservice.security.ApiKeyAuthenticationToken;
 import com.devsec.jasperservice.service.AsyncReportService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -14,6 +15,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -40,8 +42,9 @@ public class AsyncReportController {
             @ApiResponse(responseCode = "401", description = "Unauthorized. Bearer token missing or invalid."),
             @ApiResponse(responseCode = "429", description = "Too Many Requests. Rate limit exceeded.")
     })
-    public ResponseEntity<ReportResponse> submitReport(@Valid @RequestBody ReportRequest request) {
-        String jobId = asyncReportService.queueReport(request);
+    public ResponseEntity<ReportResponse> submitReport(@Valid @RequestBody ReportRequest request, Authentication authentication) {
+        ApiKeyAuthenticationToken apiKeyAuth = (ApiKeyAuthenticationToken) authentication;
+        String jobId = asyncReportService.queueReport(request, apiKeyAuth.getApiKey());
         return ResponseEntity.accepted().body(new ReportResponse(jobId));
     }
 
@@ -83,35 +86,28 @@ public class AsyncReportController {
             @ApiResponse(responseCode = "404", description = "Not Found. Job does not exist or is not yet complete.")
     })
     public ResponseEntity<Resource> downloadReport(
-            @Parameter(description = "The ID of the completed job", required = true) @PathVariable String jobId) {
-        String status = (String) redisTemplate.opsForHash().get("job:" + jobId, "status");
-        if (status == null || !status.equals(StatusResponse.Status.COMPLETE.name())) {
+            @Parameter(description = "The ID of the completed job", required = true) @PathVariable String jobId) throws java.io.IOException {
+        AsyncReportService.ReportFileClaim claim = asyncReportService.claimAndGetReportFile(jobId);
+        if (claim == null) {
             return ResponseEntity.status(404).body(null);
         }
 
-        try {
-            Resource file = asyncReportService.getReportFile(jobId);
-            String outputFileName = "report";
-            String fileExtension = "pdf";
-            String contentType = "application/pdf";
+        String outputFileName = "report";
+        String fileExtension = "pdf";
+        String contentType = "application/pdf";
 
-            String requestJson = (String) redisTemplate.opsForHash().get("job:" + jobId, "request");
-            if (requestJson != null) {
-                ReportRequest originalRequest = new com.fasterxml.jackson.databind.ObjectMapper().readValue(requestJson, ReportRequest.class);
-                outputFileName = originalRequest.getOutputFileName();
-                fileExtension = originalRequest.getOutputFormat().name().toLowerCase();
-                contentType = getContentType(originalRequest.getOutputFormat());
-            }
-
-            asyncReportService.deleteReportFile(jobId);
-
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + outputFileName + "." + fileExtension + "\"")
-                    .header(HttpHeaders.CONTENT_TYPE, contentType)
-                    .body(file);
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().build();
+        ReportRequest originalRequest = claim.getRequest();
+        if (originalRequest != null) {
+            outputFileName = originalRequest.getOutputFileName();
+            fileExtension = originalRequest.getOutputFormat().name().toLowerCase();
+            contentType = getContentType(originalRequest.getOutputFormat());
         }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + outputFileName + "." + fileExtension + "\"")
+                .header(HttpHeaders.CONTENT_TYPE, contentType)
+                .contentLength(claim.getContentLength())
+                .body(claim.getResource());
     }
 
     private String getContentType(ReportRequest.OutputFormat format) {

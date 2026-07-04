@@ -19,9 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 	"report.output.dir=target/generated-reports",
 	"management.health.redis.enabled=false",
 	"spring.data.redis.port=6379",
-	"spring.data.redis.host=localhost",
-	"POSTGRES_USER=test",
-	"POSTGRES_PASSWORD=test"
+	"spring.data.redis.host=localhost"
 })
 class JasperServiceApplicationTests {
 
